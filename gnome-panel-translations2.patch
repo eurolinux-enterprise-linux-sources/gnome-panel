@@ -1,0 +1,12 @@
+diff -urN a/po/kn.po a/po/kn.po
+--- a/po/kn.po	2010-12-23 19:32:26.753866315 +0530
++++ a/po/kn.po	2010-12-23 19:32:38.800814466 +0530
+@@ -28,7 +28,7 @@
+ 
+ #: ../applets/clock/GNOME_ClockApplet.xml.h:3
+ msgid "Copy _Time"
+-msgstr "ಸಮಯವನ್ನು ಕಾಪಿ ಮಾಡು(_D)"
++msgstr "ಸಮಯವನ್ನು ಕಾಪಿ ಮಾಡು(_T)"
+ 
+ #: ../applets/clock/GNOME_ClockApplet.xml.h:4
+ #: ../applets/fish/GNOME_FishApplet.xml.h:1

@@ -1,0 +1,209 @@
+From f4bc9b98a9619fe8cf2017dfc1f867944b03b17b Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Sun, 30 Jan 2011 23:32:03 -0500
+Subject: [PATCH] toplevel: make hiding work better with multihead
+
+When the panel needs to hide (because of autohide or hide buttons)
+on systems with multiple monitors, it does it about as well as a
+4 year old playing hide-and-go-seek.  It merely jumps onto the nearest
+adjacent monitor, covers its hands over its eyes and hopes the user
+won't see where it went.
+
+This commit makes the panel shrink instead of move off the edge of
+the current monitor.  While the toplevel shrinks, we still give the full
+allocation to the applets, to prevent any weird side effects that might
+be caused by a rapidly shrinking allocation during animations.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=641001
+---
+ gnome-panel/panel-toplevel.c |  108 ++++++++++++++++++++++++++++++------------
+ 1 files changed, 77 insertions(+), 31 deletions(-)
+
+diff --git a/gnome-panel/panel-toplevel.c b/gnome-panel/panel-toplevel.c
+index e8a98de..0cfa892 100644
+--- a/gnome-panel/panel-toplevel.c
++++ b/gnome-panel/panel-toplevel.c
+@@ -1899,11 +1899,6 @@ panel_toplevel_update_auto_hide_position (PanelToplevel *toplevel,
+ 	}
+ }
+ 
+-/* FIXME: this is wrong for Xinerama. In the Xinerama case
+- *        I think if hiding it requires it to go onto the
+- *        next monitor then it should just move it on to
+- *        the next monitor and set its state back to normal
+- */
+ static void
+ panel_toplevel_update_hidden_position (PanelToplevel *toplevel,
+ 				       int           *x,
+@@ -2904,30 +2899,50 @@ panel_toplevel_begin_resize (PanelToplevel *toplevel)
+ }
+ 
+ static void
++clip_rect_to_monitor (PanelToplevel *toplevel,
++		      GdkRectangle  *rect)
++{
++	GdkScreen *screen;
++	GdkRectangle monitor_rect;
++
++	screen = gtk_widget_get_screen (GTK_WIDGET (toplevel));
++
++	monitor_rect.x = panel_multiscreen_x (screen, toplevel->priv->monitor);
++	monitor_rect.y = panel_multiscreen_y (screen, toplevel->priv->monitor);
++	monitor_rect.width = panel_multiscreen_width (screen, toplevel->priv->monitor);
++	monitor_rect.height = panel_multiscreen_height (screen, toplevel->priv->monitor);
++
++	gdk_rectangle_intersect (rect,
++				 &monitor_rect,
++				 rect);
++}
++
++
++static void
+ panel_toplevel_move_resize_window (PanelToplevel *toplevel,
+ 				   gboolean       move,
+ 				   gboolean       resize)
+ {
+ 	GtkWidget *widget;
++	GdkRectangle rect;
+ 
+ 	widget = GTK_WIDGET (toplevel);
+ 
+ 	g_assert (gtk_widget_get_realized (widget));
+ 
++	rect = toplevel->priv->geometry;
++	clip_rect_to_monitor (toplevel, &rect);
++
+ 	if (move && resize)
+ 		gdk_window_move_resize (widget->window,
+-					toplevel->priv->geometry.x,
+-					toplevel->priv->geometry.y,
+-					toplevel->priv->geometry.width,
+-					toplevel->priv->geometry.height);
++					rect.x, rect.y,
++					rect.width, rect.height);
+ 	else if (move)
+ 		gdk_window_move (widget->window,
+-				 toplevel->priv->geometry.x,
+-				 toplevel->priv->geometry.y);
++				 rect.x, rect.y);
+ 	else if (resize)
+ 		gdk_window_resize (widget->window,
+-				   toplevel->priv->geometry.width,
+-				   toplevel->priv->geometry.height);
++				   rect.width, rect.height);
+ }
+ 
+ static void
+@@ -3042,7 +3057,8 @@ panel_toplevel_size_request (GtkWidget      *widget,
+ {
+ 	PanelToplevel *toplevel;
+ 	GtkBin        *bin;
+-	GdkRectangle   old_geometry;
++	GdkRectangle   old_rect;
++	GdkRectangle   rect;
+ 	int            position_changed = FALSE;
+ 	int            size_changed = FALSE;
+ 
+@@ -3051,27 +3067,43 @@ panel_toplevel_size_request (GtkWidget      *widget,
+ 
+ 	/* we get a size request when there are new monitors, so first try to
+ 	 * see if we need to move to a new monitor */
++	old_rect = toplevel->priv->geometry;
+ 	panel_toplevel_update_monitor (toplevel);
+ 
+ 	if (bin->child && gtk_widget_get_visible (bin->child))
+ 		gtk_widget_size_request (bin->child, requisition);
+ 
+-	old_geometry = toplevel->priv->geometry;
+-
+ 	panel_toplevel_update_geometry (toplevel, requisition);
+ 
+-	requisition->width  = toplevel->priv->geometry.width;
+-	requisition->height = toplevel->priv->geometry.height;
+-
+-	if (!gtk_widget_get_realized (widget))
++	if (!gtk_widget_get_realized (widget)) {
++		requisition->width  = toplevel->priv->geometry.width;
++		requisition->height = toplevel->priv->geometry.height;
+ 		return;
++	}
+ 
+-	if (old_geometry.width  != toplevel->priv->geometry.width ||
+-	    old_geometry.height != toplevel->priv->geometry.height)
++	rect = toplevel->priv->geometry;
++
++	if (old_rect.width != rect.width ||
++	    old_rect.height != rect.height)
++		size_changed = TRUE;
++
++	if (old_rect.x != rect.x ||
++	    old_rect.y != rect.y)
++		position_changed = TRUE;
++
++	clip_rect_to_monitor (toplevel, &rect);
++
++	requisition->width = rect.width;
++	requisition->height = rect.height;
++
++	clip_rect_to_monitor (toplevel, &old_rect);
++
++	if (old_rect.width != requisition->width ||
++	    old_rect.height != requisition->height)
+ 		size_changed = TRUE;
+ 
+-	if (old_geometry.x != toplevel->priv->geometry.x ||
+-	    old_geometry.y != toplevel->priv->geometry.y)
++	if (old_rect.x != rect.x ||
++	    old_rect.y != rect.y)
+ 		position_changed = TRUE;
+ 
+ 	panel_toplevel_move_resize_window (toplevel, position_changed, size_changed);
+@@ -3087,24 +3119,38 @@ panel_toplevel_size_allocate (GtkWidget     *widget,
+ 
+ 	widget->allocation = *allocation;
+ 
++	/* We give our children a full panel size worth of allocation,
++	 * even if we requested less (say because we're autohidden).
++	 * If there's not enough room to show the children we clip them
++	 */
+ 	if (toplevel->priv->expand ||
+ 	    toplevel->priv->buttons_enabled ||
+-	    toplevel->priv->attached)
+-		challoc = *allocation;
+-	else {
++	    toplevel->priv->attached) {
++		challoc.x = allocation->x;
++		challoc.y = allocation->y;
++		challoc.width = toplevel->priv->geometry.width;
++		challoc.height = toplevel->priv->geometry.height;
++	} else {
+ 		if (toplevel->priv->orientation & PANEL_HORIZONTAL_MASK) {
+ 			challoc.x      = HANDLE_SIZE;
+-			challoc.y      = 0;
++			challoc.y      = allocation->y;
++
+ 			challoc.width  = allocation->width - 2 * HANDLE_SIZE;
+-			challoc.height = allocation->height;
++			challoc.height = toplevel->priv->geometry.height;
+ 		} else {
+-			challoc.x      = 0;
++			challoc.x      = allocation->x;
+ 			challoc.y      = HANDLE_SIZE;
+-			challoc.width  = allocation->width;
++			challoc.width  = toplevel->priv->geometry.width;
+ 			challoc.height = allocation->height - 2 * HANDLE_SIZE;
+ 		}
+ 	}
+ 
++	if (toplevel->priv->orientation & PANEL_ORIENTATION_TOP) {
++		challoc.y -= toplevel->priv->geometry.height - allocation->height;
++	} else if (toplevel->priv->orientation & PANEL_ORIENTATION_LEFT) {
++		challoc.x -= toplevel->priv->geometry.width - allocation->width;
++	}
++
+ 	if (toplevel->priv->edges & PANEL_EDGE_TOP) {
+ 		challoc.y += widget->style->ythickness;
+ 		challoc.height -= widget->style->ythickness;
+-- 
+1.7.1
+

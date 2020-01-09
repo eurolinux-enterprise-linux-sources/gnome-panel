@@ -77,7 +77,7 @@
       <key>toplevels/top_panel/name</key>
       <schema_key>/schemas/apps/panel/toplevels/name</schema_key>
       <value>
-        <string>Top Panel</string>
+        <string></string>
       </value>
     </entry>
     <entry>
@@ -136,7 +136,7 @@
       <key>toplevels/bottom_panel/name</key>
       <schema_key>/schemas/apps/panel/toplevels/name</schema_key>
       <value>
-        <string>Bottom Panel</string>
+        <string></string>
       </value>
     </entry>
     <entry>

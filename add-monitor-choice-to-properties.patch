@@ -1,0 +1,640 @@
+From e254ccc1646d1e98dd7d82e4a42d11cd1a1fdb5e Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Thu, 27 Jan 2011 17:35:19 -0500
+Subject: [PATCH] properties: add ability to specify monitor for panel
+
+This commit allows you to specify which monitor the panel
+should go on (along with the already present orientation option).
+
+https://bugzilla.gnome.org/show_bug.cgi?id=640778
+---
+ gnome-panel/panel-multiscreen.c       |   99 ++++++++++++--
+ gnome-panel/panel-multiscreen.h       |    2 +
+ gnome-panel/panel-profile.c           |   34 +++++
+ gnome-panel/panel-profile.h           |    4 +
+ gnome-panel/panel-properties-dialog.c |  236 +++++++++++++++++++++++++++------
+ 5 files changed, 323 insertions(+), 52 deletions(-)
+
+diff --git a/gnome-panel/panel-multiscreen.c b/gnome-panel/panel-multiscreen.c
+index 4ed76ae..a4ad38f 100644
+--- a/gnome-panel/panel-multiscreen.c
++++ b/gnome-panel/panel-multiscreen.c
+@@ -44,6 +44,7 @@ extern char **environ;
+ static int            screens     = 0;
+ static int           *monitors    = NULL;
+ static GdkRectangle **geometries  = NULL;
++static char        ***names       = NULL;
+ static gboolean       initialized = FALSE;
+ static gboolean       have_randr  = FALSE;
+ static gboolean       have_randr_1_3 = FALSE;
+@@ -92,6 +93,45 @@ _panel_multiscreen_output_should_be_first (Display       *xdisplay,
+ }
+ #endif
+ 
++static char *
++get_monitor_description (GdkScreen    *screen,
++			 int           monitor)
++{
++	const char *orientation;
++	char *description;
++	gboolean leftmost, rightmost, topmost, bottommost;
++
++	panel_multiscreen_is_at_visible_extreme (screen, monitor,
++						 &leftmost,
++						 &rightmost,
++						 &topmost,
++						 &bottommost);
++
++	if (topmost && leftmost && rightmost)
++		orientation = g_dpgettext2 (NULL, "Orientation", "Top");
++	else if (bottommost && leftmost && rightmost)
++		orientation = g_dpgettext2 (NULL, "Orientation", "Bottom");
++	else if (leftmost && topmost && bottommost)
++		orientation = g_dpgettext2 (NULL, "Orientation", "Left");
++	else if (rightmost && topmost && bottommost)
++		orientation = g_dpgettext2 (NULL, "Orientation", "Right");
++	else
++		orientation = NULL;
++
++	if (orientation != NULL) {
++		description = g_strdup_printf ("%dx%d (%s)",
++					       panel_multiscreen_width (screen, monitor),
++					       panel_multiscreen_height (screen, monitor),
++					       orientation);
++	} else {
++		description = g_strdup_printf ("%dx%d",
++					       panel_multiscreen_width (screen, monitor),
++					       panel_multiscreen_height (screen, monitor));
++	}
++
++	return description;
++}
++
+ static gboolean
+ panel_multiscreen_get_randr_monitors_for_screen (GdkScreen     *screen,
+ 						 int           *monitors_ret,
+@@ -164,7 +204,6 @@ panel_multiscreen_get_randr_monitors_for_screen (GdkScreen     *screen,
+ 	geometries = g_array_sized_new (FALSE, FALSE,
+ 					sizeof (GdkRectangle),
+ 					resources->noutput);
+-
+ 	driver_is_pre_randr_1_2 = FALSE;
+ 
+ 	for (i = 0; i < resources->noutput; i++) {
+@@ -181,24 +220,25 @@ panel_multiscreen_get_randr_monitors_for_screen (GdkScreen     *screen,
+ 		if (output->connection != RR_Disconnected &&
+ 		    output->crtc != 0) {
+ 			XRRCrtcInfo  *crtc;
+-			GdkRectangle  rect;
++			GdkRectangle  monitor_rect;
+ 
+ 			crtc = XRRGetCrtcInfo (xdisplay, resources,
+ 					       output->crtc);
+ 
+-			rect.x	    = crtc->x;
+-			rect.y	    = crtc->y;
+-			rect.width  = crtc->width;
+-			rect.height = crtc->height;
++			monitor_rect.x	    = crtc->x;
++			monitor_rect.y	    = crtc->y;
++			monitor_rect.width  = crtc->width;
++			monitor_rect.height = crtc->height;
+ 
+ 			XRRFreeCrtcInfo (crtc);
+ 
+ 			if (_panel_multiscreen_output_should_be_first (xdisplay,
+ 								       resources->outputs[i],
+-								       output, primary))
+-				g_array_prepend_vals (geometries, &rect, 1);
+-			else
+-				g_array_append_vals (geometries, &rect, 1);
++								       output, primary)) {
++				g_array_prepend_vals (geometries, &monitor_rect, 1);
++			} else {
++				g_array_append_vals (geometries, &monitor_rect, 1);
++			}
+ 		}
+ 
+ 		XRRFreeOutputInfo (output);
+@@ -239,14 +279,17 @@ panel_multiscreen_get_gdk_monitors_for_screen (GdkScreen     *screen,
+ 					       GdkRectangle **geometries_ret)
+ {
+ 	int           num_monitors;
+-	GdkRectangle *geometries;
+ 	int           i;
++	GdkRectangle *geometries;
++	char        **names;
+ 
+ 	num_monitors = gdk_screen_get_n_monitors (screen);
+ 	geometries = g_new (GdkRectangle, num_monitors);
++	names = g_new (char *, num_monitors);
+ 
+-	for (i = 0; i < num_monitors; i++)
++	for (i = 0; i < num_monitors; i++) {
+ 		gdk_screen_get_monitor_geometry (screen, i, &(geometries[i]));
++	}
+ 
+ 	*monitors_ret = num_monitors;
+ 	*geometries_ret = geometries;
+@@ -363,10 +406,11 @@ panel_multiscreen_compress_overlapping_monitors (int           *num_monitors_ino
+ 				}
+ 
+ 				/* Shift the remaining monitors to the left */
+-				if (num_monitors - j - 1 > 0)
++				if (num_monitors - j - 1 > 0) {
+ 					memmove (&geometries[j],
+ 						 &geometries[j + 1],
+ 						 sizeof (geometries[0]) * (num_monitors - j - 1));
++				}
+ 
+ 				num_monitors--;
+ 				g_assert (num_monitors > 0);
+@@ -456,9 +500,11 @@ panel_multiscreen_init (void)
+ 
+ 	monitors   = g_new0 (int, screens);
+ 	geometries = g_new0 (GdkRectangle *, screens);
++	names = g_new0 (char **, screens);
+ 
+ 	for (i = 0; i < screens; i++) {
+ 		GdkScreen *screen;
++		int j;
+ 
+ 		screen = gdk_display_get_screen (display, i);
+ 
+@@ -474,6 +520,11 @@ panel_multiscreen_init (void)
+ 		panel_multiscreen_get_monitors_for_screen (screen,
+ 							   &(monitors[i]),
+ 							   &(geometries[i]));
++
++		names[i] = g_new0 (char *, monitors[i] + 1);
++		for (j = 0; j < monitors[i]; j++) {
++		    names[i][j] = get_monitor_description (screen, j);
++		}
+ 	}
+ 
+ 	initialized = TRUE;
+@@ -498,6 +549,14 @@ panel_multiscreen_reinit (void)
+ 		g_free (geometries);
+ 	}
+ 
++	if (names) {
++		int j;
++
++		for (j = 0; j < screens; j++)
++			g_strfreev (names[j]);
++		g_free (names);
++	}
++
+ 	display = gdk_display_get_default ();
+ 	/* Don't use the screens variable since in the future, we might
+ 	 * want to call this function when a screen appears/disappears. */
+@@ -597,6 +656,20 @@ panel_multiscreen_height (GdkScreen *screen,
+ 	return geometries [n_screen][monitor].height;
+ }
+ 
++const char *
++panel_multiscreen_name (GdkScreen *screen,
++		        int        monitor)
++{
++	int n_screen;
++
++	n_screen = gdk_screen_get_number (screen);
++
++	g_return_val_if_fail (n_screen >= 0 && n_screen < screens, 0);
++	g_return_val_if_fail (monitor >= 0 && monitor < monitors [n_screen], 0);
++
++	return names [n_screen][monitor];
++}
++
+ int
+ panel_multiscreen_locate_widget_monitor (GtkWidget *widget)
+ {
+diff --git a/gnome-panel/panel-multiscreen.h b/gnome-panel/panel-multiscreen.h
+index dd31b89..2e49706 100644
+--- a/gnome-panel/panel-multiscreen.h
++++ b/gnome-panel/panel-multiscreen.h
+@@ -42,6 +42,8 @@ int	panel_multiscreen_width                 (GdkScreen *screen,
+ 						 int        monitor);
+ int	panel_multiscreen_height                (GdkScreen *screen,
+ 						 int        monitor);
++const char *panel_multiscreen_name              (GdkScreen *screen,
++						 int        monitor);
+ int	panel_multiscreen_locate_widget_monitor (GtkWidget *widget);
+ int     panel_multiscreen_get_monitor_at_point  (GdkScreen *screen,
+ 						 int        x,
+diff --git a/gnome-panel/panel-profile.c b/gnome-panel/panel-profile.c
+index d4fe289..d008650 100644
+--- a/gnome-panel/panel-profile.c
++++ b/gnome-panel/panel-profile.c
+@@ -613,6 +613,40 @@ panel_profile_get_toplevel_orientation (PanelToplevel *toplevel)
+ 
+ TOPLEVEL_IS_WRITABLE_FUNC ("orientation", toplevel, orientation)
+ 
++void
++panel_profile_set_toplevel_monitor (PanelToplevel    *toplevel,
++				    int               monitor)
++{
++	GConfClient *client;
++	const char  *key;
++
++	client = panel_gconf_get_client ();
++
++	key = panel_profile_get_toplevel_key (toplevel, "monitor");
++	gconf_client_set_int (client,
++			      key,
++			      monitor,
++			      NULL);
++}
++
++int
++panel_profile_get_toplevel_monitor (PanelToplevel *toplevel)
++{
++	int          monitor;
++	GConfClient *client;
++	const char  *key;
++	char        *str;
++
++	client = panel_gconf_get_client ();
++
++	key = panel_profile_get_toplevel_key (toplevel, "monitor");
++	monitor = gconf_client_get_int (client, key, NULL);
++
++	return monitor;
++}
++
++TOPLEVEL_IS_WRITABLE_FUNC ("monitor", toplevel, monitor)
++
+ #define TOPLEVEL_GET_SET_FUNCS(k, p, t, s, a)                         \
+ 	void                                                          \
+ 	panel_profile_set_##p##_##s (PanelToplevel *toplevel, a s)    \
+diff --git a/gnome-panel/panel-profile.h b/gnome-panel/panel-profile.h
+index f248930..9ecfb01 100644
+--- a/gnome-panel/panel-profile.h
++++ b/gnome-panel/panel-profile.h
+@@ -82,6 +82,10 @@ void        panel_profile_set_toplevel_orientation    (PanelToplevel *toplevel,
+ PanelOrientation
+             panel_profile_get_toplevel_orientation    (PanelToplevel *toplevel);
+ gboolean    panel_profile_is_writable_toplevel_orientation (PanelToplevel *toplevel);
++void        panel_profile_set_toplevel_monitor        (PanelToplevel *toplevel,
++						       int monitor);
++int         panel_profile_get_toplevel_monitor        (PanelToplevel *toplevel);
++gboolean    panel_profile_is_writable_toplevel_monitor (PanelToplevel *toplevel);
+ 
+ void        panel_profile_set_toplevel_size           (PanelToplevel *toplevel,
+ 						       int            size);
+diff --git a/gnome-panel/panel-properties-dialog.c b/gnome-panel/panel-properties-dialog.c
+index 4cab60c..e97e4d3 100644
+--- a/gnome-panel/panel-properties-dialog.c
++++ b/gnome-panel/panel-properties-dialog.c
+@@ -37,6 +37,7 @@
+ 
+ #include "nothing.h"
+ #include "panel-profile.h"
++#include "panel-multiscreen.h"
+ #include "panel-gconf.h"
+ #include "panel-util.h"
+ #include "panel-globals.h"
+@@ -82,6 +83,8 @@ typedef struct {
+ 
+ 	/* FIXME: This is a workaround for GTK+ bug #327243 */
+ 	int            selection_emitted;
++
++	guint          repopulate_idle_id;
+ } PanelPropertiesDialog;
+ 
+ static GQuark panel_properties_dialog_quark = 0;
+@@ -111,6 +114,7 @@ panel_properties_dialog_free (PanelPropertiesDialog *dialog)
+ enum {
+ 	COLUMN_TEXT,
+ 	COLUMN_ITEM,
++	COLUMN_MONITOR,
+ 	NUMBER_COLUMNS
+ };
+ 
+@@ -127,12 +131,13 @@ static OrientationComboItem orientation_items [] = {
+ };
+ 
+ static void
+-panel_properties_dialog_orientation_changed (PanelPropertiesDialog *dialog,
+-					     GtkComboBox           *combo_box)
++panel_properties_dialog_combo_box_changed (PanelPropertiesDialog *dialog,
++				           GtkComboBox           *combo_box)
+ {
+ 	GtkTreeIter           iter;
+ 	GtkTreeModel         *model;
+ 	OrientationComboItem *item;
++	int                   monitor;
+ 
+ 	g_assert (dialog->orientation_combo == GTK_WIDGET (combo_box));
+ 
+@@ -140,57 +145,160 @@ panel_properties_dialog_orientation_changed (PanelPropertiesDialog *dialog,
+ 		return;
+ 
+ 	model = gtk_combo_box_get_model (combo_box);
+-	gtk_tree_model_get (model, &iter, COLUMN_ITEM, &item, -1);
++	gtk_tree_model_get (model, &iter, COLUMN_ITEM, &item, COLUMN_MONITOR, &monitor, -1);
+ 	if (item == NULL)
+ 		return;
+ 
++	panel_profile_set_toplevel_monitor (dialog->toplevel,
++					    monitor);
+ 	panel_profile_set_toplevel_orientation (dialog->toplevel,
+ 						item->orientation);
+ }
+ 
+ static void
++combo_box_cell_data_func (GtkCellLayout         *cell_layout,
++			  GtkCellRenderer       *renderer,
++			  GtkTreeModel          *model,
++			  GtkTreeIter           *iter,
++			  PanelPropertiesDialog *dialog)
++{
++	char *text;
++	OrientationComboItem *item;
++	int monitor;
++
++	gtk_tree_model_get (model, iter, COLUMN_TEXT, &text, COLUMN_ITEM, &item, COLUMN_MONITOR, &monitor, -1);
++
++	g_object_set (renderer, "markup", text, NULL);
++
++	g_free (text);
++
++	if (item == NULL) {
++		g_object_set (renderer, "mode", GTK_CELL_RENDERER_MODE_INERT,
++					"sensitive", FALSE,
++					"xalign", 0.5,
++					NULL);
++	} else {
++		GdkScreen *screen;
++		int n_monitors;
++
++		g_object_set (renderer, "mode", GTK_CELL_RENDERER_MODE_ACTIVATABLE,
++					"sensitive", TRUE,
++					"xalign", 0.0,
++					NULL);
++
++		screen = gtk_widget_get_screen (GTK_WIDGET (dialog->toplevel));
++		n_monitors = panel_multiscreen_monitors (screen);
++
++		if (monitor >= n_monitors) {
++			g_object_set (renderer, "sensitive", FALSE, NULL);
++		} else {
++			g_object_set (renderer, "sensitive", TRUE, NULL);
++		}
++	}
++}
++
++static gboolean
++repopulate_combo (PanelPropertiesDialog *dialog)
++{
++	GdkScreen        *screen;
++	int               current_monitor;
++	int               monitor;
++	int               n_monitors;
++	GtkListStore     *model;
++	GtkTreeIter       iter;
++	PanelOrientation  orientation;
++	int               i;
++
++	model = GTK_LIST_STORE (gtk_combo_box_get_model (GTK_COMBO_BOX (dialog->orientation_combo)));
++
++	gtk_list_store_clear (model);
++	orientation = panel_profile_get_toplevel_orientation (dialog->toplevel);
++
++	current_monitor = panel_multiscreen_locate_widget_monitor (GTK_WIDGET (dialog->toplevel));
++	screen = gtk_widget_get_screen (GTK_WIDGET (dialog->toplevel));
++	n_monitors = panel_multiscreen_monitors (screen);
++	for (monitor = 0; monitor < n_monitors; monitor++) {
++		char *string;
++
++		if (n_monitors > 1) {
++			string = g_strdup_printf ("<small><b>%s</b></small>",
++						  panel_multiscreen_name (screen, monitor));
++			gtk_list_store_append (model, &iter);
++			gtk_list_store_set (model, &iter,
++					    COLUMN_TEXT, string,
++					    COLUMN_ITEM, NULL,
++					    COLUMN_MONITOR, monitor,
++					    -1);
++			g_free (string);
++		}
++
++		for (i = 0; i < G_N_ELEMENTS (orientation_items); i++) {
++			gtk_list_store_append (model, &iter);
++			gtk_list_store_set (model, &iter,
++					    COLUMN_TEXT, g_dpgettext2 (NULL, "Orientation", orientation_items [i].name),
++					    COLUMN_ITEM, &(orientation_items [i]),
++					    COLUMN_MONITOR, monitor,
++					    -1);
++			if (orientation == orientation_items [i].orientation && monitor == current_monitor)
++				gtk_combo_box_set_active_iter (GTK_COMBO_BOX (dialog->orientation_combo),
++							       &iter);
++		}
++	}
++
++	dialog->repopulate_idle_id = 0;
++	return FALSE;
++}
++
++static void
++repopulate_combo_on_idle (PanelPropertiesDialog *dialog)
++{
++	if (dialog->repopulate_idle_id != 0) {
++		return;
++	}
++	dialog->repopulate_idle_id = g_idle_add_full (G_PRIORITY_LOW,
++							    (GSourceFunc) repopulate_combo,
++							    dialog,
++							    NULL);
++}
++
++static void
+ panel_properties_dialog_setup_orientation_combo (PanelPropertiesDialog *dialog,
+ 						 GtkBuilder            *gui)
+ {
+-	PanelOrientation  orientation;
+ 	GtkListStore     *model;
+-	GtkTreeIter       iter;
+ 	GtkCellRenderer  *renderer;
+-	int               i;
++	GdkScreen        *screen;
+ 
+ 	dialog->orientation_combo = PANEL_GTK_BUILDER_GET (gui, "orientation_combo");
+ 	g_return_if_fail (dialog->orientation_combo != NULL);
+ 	dialog->orientation_label = PANEL_GTK_BUILDER_GET (gui, "orientation_label");
+ 	g_return_if_fail (dialog->orientation_label != NULL);
+ 
+-	orientation = panel_profile_get_toplevel_orientation (dialog->toplevel);
+-
+ 	model = gtk_list_store_new (NUMBER_COLUMNS,
+ 				    G_TYPE_STRING,
+-				    G_TYPE_POINTER);
++				    G_TYPE_POINTER,
++				    G_TYPE_INT);
+ 
+ 	gtk_combo_box_set_model (GTK_COMBO_BOX (dialog->orientation_combo),
+ 				 GTK_TREE_MODEL (model));
+ 
+-	for (i = 0; i < G_N_ELEMENTS (orientation_items); i++) {
+-		gtk_list_store_append (model, &iter);
+-		gtk_list_store_set (model, &iter,
+-				    COLUMN_TEXT, g_dpgettext2 (NULL, "Orientation", orientation_items [i].name),
+-				    COLUMN_ITEM, &(orientation_items [i]),
+-				    -1);
+-		if (orientation == orientation_items [i].orientation)
+-			gtk_combo_box_set_active_iter (GTK_COMBO_BOX (dialog->orientation_combo),
+-						       &iter);
+-	}
++	repopulate_combo (dialog);
++
++	screen = gtk_widget_get_screen (GTK_WIDGET (dialog->toplevel));
++	g_signal_connect_swapped (screen, "monitors-changed",
++				  G_CALLBACK (repopulate_combo_on_idle), dialog);
+ 
+ 	renderer = gtk_cell_renderer_text_new ();
+ 	gtk_cell_layout_pack_start (GTK_CELL_LAYOUT (dialog->orientation_combo),
+ 				    renderer, TRUE);
+-	gtk_cell_layout_set_attributes (GTK_CELL_LAYOUT (dialog->orientation_combo),
+-					renderer, "text", COLUMN_TEXT, NULL);
++	gtk_cell_layout_set_cell_data_func (GTK_CELL_LAYOUT (dialog->orientation_combo),
++					    renderer,
++					    (GtkCellLayoutDataFunc)
++					    combo_box_cell_data_func,
++					    dialog, NULL);
+ 
+ 	g_signal_connect_swapped (dialog->orientation_combo, "changed",
+-				  G_CALLBACK (panel_properties_dialog_orientation_changed),
++				  G_CALLBACK (panel_properties_dialog_combo_box_changed),
+ 				  dialog);
+ 
+ 	if (! panel_profile_is_writable_toplevel_orientation (dialog->toplevel)) {
+@@ -573,6 +681,16 @@ panel_properties_dialog_response (PanelPropertiesDialog *dialog,
+ static void
+ panel_properties_dialog_destroy (PanelPropertiesDialog *dialog)
+ {
++	GdkScreen *screen;
++
++	if (dialog->repopulate_idle_id != 0) {
++		g_source_remove (dialog->repopulate_idle_id);
++		dialog->repopulate_idle_id = 0;
++	}
++
++	screen = gtk_widget_get_screen (GTK_WIDGET (dialog->toplevel));
++	g_signal_handlers_disconnect_by_func (screen, G_CALLBACK (repopulate_combo_on_idle), dialog);
++
+ 	panel_toplevel_pop_autohide_disabler (PANEL_TOPLEVEL (dialog->toplevel));
+ 	g_object_set_qdata (G_OBJECT (dialog->toplevel),
+ 			    panel_properties_dialog_quark,
+@@ -580,22 +698,11 @@ panel_properties_dialog_destroy (PanelPropertiesDialog *dialog)
+ }
+ 
+ static void
+-panel_properties_dialog_update_orientation (PanelPropertiesDialog *dialog,
+-					    GConfValue            *value)
++panel_properties_dialog_update_spin_button (PanelPropertiesDialog *dialog)
+ {
+-	PanelOrientation      orientation;
+-	GtkTreeModel         *model;
+-	GtkTreeIter           iter;
+-	OrientationComboItem *item;
+-	int                   max_size;
+-	int                   spin_size;
+-	int                   profile_size;
+-
+-	if (!value || value->type != GCONF_VALUE_STRING)
+-		return;
+-
+-	if (!panel_profile_map_orientation_string (gconf_value_get_string (value), &orientation))
+-		return;
++	int max_size;
++	int spin_size;
++	int profile_size;
+ 
+ 	/* change the maximum size of the panel */
+ 	//TODO: we should also do this when the monitor size changes
+@@ -614,6 +721,17 @@ panel_properties_dialog_update_orientation (PanelPropertiesDialog *dialog,
+ 		gtk_spin_button_set_value (GTK_SPIN_BUTTON (dialog->size_spin),
+ 					   MIN (profile_size, max_size));
+ 
++}
++
++static void
++panel_properties_dialog_update_combo_box (PanelPropertiesDialog *dialog,
++					  int                    monitor,
++					  PanelOrientation       orientation)
++{
++	GtkTreeModel         *model;
++	GtkTreeIter           iter;
++	OrientationComboItem *item;
++
+ 	/* update the orientation combo box */
+ 	model = gtk_combo_box_get_model (GTK_COMBO_BOX (dialog->orientation_combo));
+ 
+@@ -621,8 +739,9 @@ panel_properties_dialog_update_orientation (PanelPropertiesDialog *dialog,
+ 		return;
+ 
+ 	do {
+-		gtk_tree_model_get (model, &iter, COLUMN_ITEM, &item, -1);
+-		if (item != NULL && item->orientation == orientation) {
++		int column_monitor;
++		gtk_tree_model_get (model, &iter, COLUMN_ITEM, &item, COLUMN_MONITOR, &column_monitor, -1);
++		if (item != NULL && item->orientation == orientation && column_monitor == monitor) {
+ 			gtk_combo_box_set_active_iter (GTK_COMBO_BOX (dialog->orientation_combo),
+ 						       &iter);
+ 			return;
+@@ -631,6 +750,43 @@ panel_properties_dialog_update_orientation (PanelPropertiesDialog *dialog,
+ }
+ 
+ static void
++panel_properties_dialog_update_orientation (PanelPropertiesDialog *dialog,
++					    GConfValue            *value)
++{
++	PanelOrientation      orientation;
++	int                   monitor;
++
++	if (!value || value->type != GCONF_VALUE_STRING)
++		return;
++
++	if (!panel_profile_map_orientation_string (gconf_value_get_string (value), &orientation))
++		return;
++
++	monitor = panel_profile_get_toplevel_monitor (dialog->toplevel);
++
++	panel_properties_dialog_update_spin_button (dialog);
++	panel_properties_dialog_update_combo_box (dialog, monitor, orientation);
++}
++
++static void
++panel_properties_dialog_update_monitor (PanelPropertiesDialog *dialog,
++					GConfValue            *value)
++{
++	PanelOrientation      orientation;
++	int                   monitor;
++
++	if (!value || value->type != GCONF_VALUE_INT)
++		return;
++
++	monitor = gconf_value_get_int (value);
++
++	orientation = panel_profile_get_toplevel_orientation (dialog->toplevel);
++
++	panel_properties_dialog_update_spin_button (dialog);
++	panel_properties_dialog_update_combo_box (dialog, monitor, orientation);
++}
++
++static void
+ panel_properties_dialog_update_size (PanelPropertiesDialog *dialog,
+ 				     GConfValue            *value)
+ {
+@@ -667,6 +823,8 @@ panel_properties_dialog_toplevel_notify (GConfClient           *client,
+ 
+ 	if (!strcmp (key, "orientation"))
+ 		panel_properties_dialog_update_orientation (dialog, value);
++	else if (!strcmp (key, "monitor"))
++		panel_properties_dialog_update_monitor (dialog, value);
+ 	else if (!strcmp (key, "size"))
+ 		panel_properties_dialog_update_size (dialog, value);
+ 	else UPDATE_TOGGLE ("expand",         expand_toggle)
+-- 
+1.7.1
+

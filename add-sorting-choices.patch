@@ -1,0 +1,324 @@
+From c07d23d0ec4c69ee42cfd6cce4070420bf2ff21a Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Thu, 3 Mar 2011 10:12:33 -0500
+Subject: [PATCH] wncklet: Add new sorting option for window list groups
+
+Right now window list groups sort their windows alphabetically.
+This commit adds a new option to the panel preferences
+to change the sorting behavior to the same behavior as
+ungrouped windows.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=171804
+---
+ applets/wncklet/window-list.c          |  139 ++++++++++++++++++++++++++++++++
+ applets/wncklet/window-list.schemas.in |   14 +++
+ applets/wncklet/window-list.ui         |   57 +++++++++++++
+ 3 files changed, 210 insertions(+), 0 deletions(-)
+
+diff --git a/applets/wncklet/window-list.c b/applets/wncklet/window-list.c
+index 90d9f23..9a07557 100644
+--- a/applets/wncklet/window-list.c
++++ b/applets/wncklet/window-list.c
+@@ -35,6 +35,7 @@ typedef struct {
+ 	
+ 	gboolean include_all_workspaces;
+ 	WnckTasklistGroupingType grouping;
++	WnckTasklistGroupingSortPolicy grouping_sort_policy;
+ 	gboolean move_unminimized_windows;
+   
+ 	GtkOrientation orientation;
+@@ -49,6 +50,8 @@ typedef struct {
+ 	GtkWidget *never_group_radio;
+ 	GtkWidget *auto_group_radio;
+ 	GtkWidget *always_group_radio;
++	GtkWidget *grouping_sort_policy_vbox;
++	GtkWidget *grouping_sort_policy_combo_box;
+ 	GtkWidget *minimized_windows_label;
+ 	GtkWidget *move_minimized_radio;
+ 	GtkWidget *change_workspace_radio;
+@@ -82,6 +85,8 @@ tasklist_update (TasklistData *tasklist)
+ 
+ 	wnck_tasklist_set_grouping (WNCK_TASKLIST (tasklist->tasklist),
+ 				    tasklist->grouping);
++	wnck_tasklist_set_grouping_sort_policy (WNCK_TASKLIST (tasklist->tasklist),
++						tasklist->grouping_sort_policy);
+ 	wnck_tasklist_set_include_all_workspaces (WNCK_TASKLIST (tasklist->tasklist),
+ 						  tasklist->include_all_workspaces);
+ 	wnck_tasklist_set_switch_workspace_on_unminimize (WNCK_TASKLIST (tasklist->tasklist),
+@@ -314,6 +319,91 @@ group_windows_changed (GConfClient  *client,
+ 	    !gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (button))) {
+ 		gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (button), TRUE);
+ 	}
++
++	gtk_widget_set_sensitive (tasklist->grouping_sort_policy_vbox,
++				  type != WNCK_TASKLIST_NEVER_GROUP);
++}
++
++static WnckTasklistGroupingSortPolicy
++parse_grouping_sort_policy_from_string (const char *string)
++{
++	g_assert (string != NULL);
++
++	if (strcmp (string, "alphabetical") != 0) {
++		return WNCK_TASKLIST_GROUPING_SORT_BY_AGE;
++	}
++
++	return WNCK_TASKLIST_GROUPING_SORT_ALPHABETICALLY;
++}
++
++static const char *
++convert_grouping_sort_policy_to_string (WnckTasklistGroupingSortPolicy policy)
++{
++	switch (policy) {
++	case WNCK_TASKLIST_GROUPING_SORT_BY_AGE:
++		return "by-age";
++	case WNCK_TASKLIST_GROUPING_SORT_ALPHABETICALLY:
++		return "alphabetical";
++	default:
++		g_assert_not_reached ();
++	}
++}
++
++static void
++find_iter_of_item_with_policy (TasklistData *tasklist,
++			       GtkTreeModel *model,
++			       WnckTasklistGroupingSortPolicy policy,
++			       GtkTreeIter  *iter)
++{
++	const char *policy_string;
++
++	policy_string = convert_grouping_sort_policy_to_string (policy);
++	gtk_tree_model_get_iter_first (model, iter);
++	do {
++		char *string;
++		gtk_tree_model_get (model, iter, 0, &string, -1);
++
++		if (strcmp (policy_string, string) == 0) {
++			g_free (string);
++			return;
++		}
++		g_free (string);
++	} while (gtk_tree_model_iter_next (model, iter));
++}
++
++static void
++tasklist_update_grouping_sort_policy_combo_box (TasklistData *tasklist)
++{
++	GtkTreeModel *model;
++	GtkTreeIter iter;
++
++	if (tasklist->grouping_sort_policy_combo_box == NULL)
++		return;
++
++	model = gtk_combo_box_get_model (GTK_COMBO_BOX (tasklist->grouping_sort_policy_combo_box));
++
++	find_iter_of_item_with_policy (tasklist, model, tasklist->grouping_sort_policy, &iter);
++
++	gtk_combo_box_set_active_iter (GTK_COMBO_BOX (tasklist->grouping_sort_policy_combo_box), &iter);
++}
++
++static void
++grouping_sort_policy_changed (GConfClient  *client,
++			      guint         cnxn_id,
++			      GConfEntry   *entry,
++			      TasklistData *tasklist)
++{
++	const gchar *value;
++
++	if (!entry->value || entry->value->type != GCONF_VALUE_STRING)
++		return;
++
++	value = gconf_value_get_string (entry->value);
++
++	tasklist->grouping_sort_policy = parse_grouping_sort_policy_from_string (value);
++	tasklist_update (tasklist);
++
++	tasklist_update_grouping_sort_policy_combo_box (tasklist);
+ }
+ 
+ static void
+@@ -379,6 +469,14 @@ setup_gconf (TasklistData *tasklist)
+ 	g_free (key);
+ 
+ 	key = panel_applet_gconf_get_full_key (PANEL_APPLET (tasklist->applet),
++					       "grouping_sort_policy");
++	tasklist->listeners[2] = gconf_client_notify_add(client, key,
++				(GConfClientNotifyFunc)grouping_sort_policy_changed,
++				tasklist,
++				NULL, NULL);
++	g_free (key);
++
++	key = panel_applet_gconf_get_full_key (PANEL_APPLET (tasklist->applet),
+ 					       "move_unminimized_windows");
+ 	tasklist->listeners[2] = gconf_client_notify_add(client, key,
+ 				(GConfClientNotifyFunc)move_unminimized_windows_changed,
+@@ -498,6 +596,13 @@ window_list_applet_fill (PanelApplet *applet)
+ 		tasklist->grouping = WNCK_TASKLIST_AUTO_GROUP; /* Default value */
+ 	
+ 	error = NULL;
++	tasklist->grouping_sort_policy = panel_applet_gconf_get_bool (applet, "grouping_sort_policy", &error);
++	if (error) {
++		g_error_free (error);
++		tasklist->grouping_sort_policy = WNCK_TASKLIST_GROUPING_SORT_ALPHABETICALLY; /* Default value */
++	}
++
++	error = NULL;
+ 	tasklist->move_unminimized_windows = panel_applet_gconf_get_bool (applet, "move_unminimized_windows", &error);
+ 	if (error) {
+ 		g_error_free (error);
+@@ -618,6 +723,25 @@ display_about_dialog (BonoboUIComponent *uic,
+ }
+ 
+ static void
++grouping_sort_policy_combo_box_changed (GtkToggleButton *button,
++				        TasklistData    *tasklist)
++{
++	GtkTreeIter iter;
++	GtkTreeModel *model;
++	char *string;
++
++	model = gtk_combo_box_get_model (GTK_COMBO_BOX (tasklist->grouping_sort_policy_combo_box));
++	gtk_combo_box_get_active_iter (GTK_COMBO_BOX (tasklist->grouping_sort_policy_combo_box),
++				       &iter);
++	gtk_tree_model_get (model, &iter, 0, &string, -1);
++
++	panel_applet_gconf_set_string (PANEL_APPLET (tasklist->applet),
++				       "grouping_sort_policy",
++				       string,
++				       NULL);
++	g_free (string);
++}
++static void
+ group_windows_toggled (GtkToggleButton *button,
+ 		       TasklistData    *tasklist)
+ {
+@@ -716,6 +840,17 @@ setup_dialog (GtkBuilder   *builder,
+ 			   "always_group_radio",
+ 			   "group_windows" /* key */);
+ 
++	tasklist->grouping_sort_policy_vbox = WID ("grouping_sort_policy_vbox");
++	tasklist->grouping_sort_policy_combo_box = WID ("grouping_sort_policy_combo_box");
++	gtk_widget_set_sensitive (tasklist->grouping_sort_policy_vbox,
++				  (tasklist->grouping != WNCK_TASKLIST_NEVER_GROUP));
++
++	setup_sensitivity (tasklist, client, builder,
++			   "grouping_sort_policy_vbox",
++			   NULL,
++			   NULL,
++			   "grouping_sort_policy" /* key */);
++
+ 	tasklist->minimized_windows_label = WID ("minimized_windows_label");
+ 	tasklist->move_minimized_radio = WID ("move_minimized_radio");
+ 	tasklist->change_workspace_radio = WID ("change_workspace_radio");
+@@ -743,6 +878,10 @@ setup_dialog (GtkBuilder   *builder,
+ 	g_signal_connect (G_OBJECT (tasklist->always_group_radio), "toggled",
+ 			  (GCallback) group_windows_toggled, tasklist);
+ 
++	tasklist_update_grouping_sort_policy_combo_box (tasklist);
++	g_signal_connect (G_OBJECT (tasklist->grouping_sort_policy_combo_box),
++			  "changed",
++			  (GCallback) grouping_sort_policy_combo_box_changed, tasklist);
+ 	/* move window when unminimizing: */
+ 	tasklist_update_unminimization_radio (tasklist);
+ 	g_signal_connect (G_OBJECT (tasklist->move_minimized_radio), "toggled",
+diff --git a/applets/wncklet/window-list.schemas.in b/applets/wncklet/window-list.schemas.in
+index 008e545..6c67666 100644
+--- a/applets/wncklet/window-list.schemas.in
++++ b/applets/wncklet/window-list.schemas.in
+@@ -30,6 +30,20 @@
+       </schema>
+ 
+       <schema>
++        <key>/schemas/apps/window_list_applet/prefs/grouping_sort_policy</key>
++        <owner>window-list-applet</owner>
++        <type>bool</type>
++        <default>true</default>
++        <locale name="C">
++          <short>Policy for sorting windows in groups</short>
++          <long>
++            If "alphabetical", sorts windows in groups alphabetically. If "by-age",
++	    sorts windows in groups in the same way ungrouped windows are sorted.
++          </long>
++        </locale>
++      </schema>
++
++      <schema>
+         <key>/schemas/apps/window_list_applet/prefs/move_unminimized_windows</key>
+         <owner>window-list-applet</owner>
+         <type>bool</type>
+diff --git a/applets/wncklet/window-list.ui b/applets/wncklet/window-list.ui
+index f931295..82250fa 100644
+--- a/applets/wncklet/window-list.ui
++++ b/applets/wncklet/window-list.ui
+@@ -170,6 +170,45 @@
+                             <property name="position">2</property>
+                           </packing>
+                         </child>
++                        <child>
++                          <object class="GtkVBox" id="grouping_sort_policy_vbox">
++                            <property name="visible">True</property>
++                            <property name="orientation">horizontal</property>
++                            <property name="spacing">6</property>
++                            <child>
++                              <object class="GtkLabel" id="grouping_sort_policy_label">
++                                <property name="visible">True</property>
++                                <property name="xalign">0</property>
++                                <property name="label" translatable="yes">Sort windows in groups:</property>
++                                <property name="use_markup">True</property>
++                              </object>
++                              <packing>
++                                <property name="expand">False</property>
++                                <property name="fill">False</property>
++                                <property name="position">0</property>
++                              </packing>
++                            </child>
++                            <child>
++                              <object class="GtkComboBox" id="grouping_sort_policy_combo_box">
++                                <property name="visible">True</property>
++                                <property name="model">grouping-sort-model</property>
++                                <child>
++                                  <object class="GtkCellRendererText" id="cellrenderertext1"/>
++                                  <attributes>
++                                    <attribute name="text">1</attribute>
++                                  </attributes>
++                                </child>
++                              </object>
++                              <packing>
++                                <property name="position">1</property>
++                              </packing>
++                            </child>
++                          </object>
++                          <packing>
++                            <property name="expand">False</property>
++                            <property name="position">3</property>
++                          </packing>
++                        </child>
+                       </object>
+                     </child>
+                   </object>
+@@ -310,4 +349,22 @@
+       <action-widget response="0">done_button</action-widget>
+     </action-widgets>
+   </object>
++  <object class="GtkListStore" id="grouping-sort-model">
++    <columns>
++      <!-- column-name title -->
++      <column type="gchararray"/>
++      <!-- column-name policy -->
++      <column type="gchararray"/>
++    </columns>
++    <data>
++      <row>
++        <col id="0" translatable="yes">alphabetical</col>
++        <col id="1" translatable="yes">Alphabetically</col>
++      </row>
++      <row>
++        <col id="0" translatable="yes">by-age</col>
++        <col id="1" translatable="yes">By Age</col>
++      </row>
++    </data>
++  </object>
+ </interface>
+-- 
+1.7.1
+

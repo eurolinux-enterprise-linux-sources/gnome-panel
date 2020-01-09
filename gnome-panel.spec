@@ -8,7 +8,7 @@
 %define libgnomeui_version 2.5.4
 %define libbonoboui_version 2.3.0
 %define orbit_version 2.4.0
-%define libwnck_version 2.19.5
+%define libwnck_version 2.28.0-3.el6
 %define gconf_version 2.14
 %define gnome_menus_version 2.27.92
 %define evolution_data_server_version 1.9.1
@@ -23,7 +23,7 @@
 Summary: GNOME panel
 Name: gnome-panel
 Version: 2.30.2
-Release: 5%{?dist}
+Release: 14%{?dist}
 URL: http://www.gnome.org
 Source0: http://download.gnome.org/sources/gnome-panel/2.28/%{name}-%{version}.tar.bz2
 
@@ -135,6 +135,19 @@ Patch53: gnome-panel-translations.patch
 
 Patch54: allow-super-mouse-modifier.patch
 
+# https://bugzilla.redhat.com/show_bug.cgi?id=633870
+Patch55: gnome-panel-translations2.patch
+
+# https://bugzilla.redhat.com/show_bug.cgi?id=585312
+Patch56: add-monitor-choice-to-properties.patch
+
+# https://bugzilla.redhat.com/show_bug.cgi?id=607665
+Patch57: fix-hiding.patch
+
+# http://bugzilla.gnome.org/show_bug.cgi?id=171804
+# https://bugzilla.redhat.com/show_bug.cgi?id=509061
+Patch58: add-sorting-choices.patch
+
 # http://bugzilla.gnome.org/show_bug.cgi?id=343436
 Patch143: panel-padding.patch
 
@@ -194,6 +207,9 @@ Panel Applets using the libpanel-applet library.
 %patch51 -p1 -b .dir-prefix
 %patch52 -p1 -b .doc-category
 %patch54 -p1 -b .allow-super-mouse-modifier
+%patch56 -p1 -b .add-monitor-choice-to-properties
+%patch57 -p1 -b .fix-hiding
+%patch58 -p1 -b .add-sorting-choices
 %patch143 -p1 -b .panel-padding
 %patch145 -p1 -b .icon-padding
 
@@ -209,6 +225,7 @@ automake
 autoconf
 
 %patch53 -p1 -b .translations
+%patch55 -p1 -b .translations2
 
 %build
 %configure \
@@ -393,6 +410,50 @@ fi
 %{_datadir}/gtk-doc/html/*
 
 %changelog
+* Thu Mar 03 2011 Ray Strode <rstrode@redhat.com> 2.30.2-14
+- Add group sorting options to window list preferences
+  Resolves: #509061
+
+* Tue Mar 01 2011 Ray Strode <rstrode@redhat.com> 2.30.2-13
+- One more update to monitor choice patch to fix crash
+  after closing dialog
+  Related: #585312
+
+* Thu Feb 24 2011 Ray Strode <rstrode@redhat.com> 2.30.2-12
+- Fix positioning negotiation problem noticed by QE when
+  testing fix that went in 2.30.2-11
+  Resolves: #671088
+- Improve monitor labeling heuristics
+  Related: #585312
+
+* Wed Feb 16 2011 Ray Strode <rstrode@redhat.com> 2.30.2-11
+- Fix size negotiation problem noticed by QE and GSS when
+  testing fix that went in 2.30.2-9
+  Resolves: #671088
+  Related: #607665
+
+* Tue Feb 15 2011 Ray Strode <rstrode@redhat.com> 2.30.2-10
+- Fix monitor naming problem noticed by QE when testing fix
+  that went in 2.30.2-8
+  Related: #585312
+
+* Mon Jan 31 2011 Ray Strode <rstrode@redhat.com> 2.30.2-9
+- Make hiding work better in multihead setups
+  Resolves: #607665
+
+* Thu Jan 27 2011 Ray Strode <rstrode@redhat.com> 2.30.2-8
+- Let user change which monitor panel is on based on properties
+  Resolves: #585312
+
+* Wed Jan 26 2011 Ray Strode <rstrode@redhat.com> 2.30.2-7
+- Drop panel names from default config so they don't override
+  translated fallback names
+  Resolves: #633853
+
+* Thu Dec 23 2010 Ankit Patel <ankit@redhat.com> 2.30.2-6
+- Update translations to fix Kannada translation shortcut issue
+  Related: #633870
+
 * Tue Aug 17 2010 Ray Strode <rstrode@redhat.com> 2.30.2-5
 - More panel drag fixes
   Related: #614997
