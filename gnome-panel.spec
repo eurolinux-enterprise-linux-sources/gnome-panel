@@ -23,7 +23,7 @@
 Summary: GNOME panel
 Name: gnome-panel
 Version: 2.30.2
-Release: 15%{?dist}
+Release: 16%{?dist}
 URL: http://www.gnome.org
 Source0: http://download.gnome.org/sources/gnome-panel/2.28/%{name}-%{version}.tar.bz2
 
@@ -154,6 +154,7 @@ Patch143: panel-padding.patch
 # https://bugzilla.gnome.org/show_bug.cgi?id=583273
 Patch145: icon-padding.patch
 
+Patch146: gnome-panel-2.30.2_EL6.8-translations.patch
 
 Conflicts: gnome-power-manager < 2.15.3
 
@@ -226,6 +227,7 @@ autoconf
 
 %patch53 -p1 -b .translations
 %patch55 -p1 -b .translations2
+%patch146 -p1 -b .translations-6.8
 
 %build
 %configure \
@@ -410,6 +412,11 @@ fi
 %{_datadir}/gtk-doc/html/*
 
 %changelog
+* Wed Mar 09 2016 Ray Strode <rstrode@redhat.com> - 2.30.2-16
+- Add patch from Noriki Mizumoto <noriko@redhat.com> to
+  increase translation coverage
+  Resolves: #819798
+
 * Tue Jun 11 2013 Matthew Barnes <mbarnes@redhat.com> 2.30.2-15
 - Rebuild against newer evolution-data-server.
   Resolves: #973284
