@@ -23,7 +23,7 @@
 Summary: GNOME panel
 Name: gnome-panel
 Version: 2.30.2
-Release: 14%{?dist}
+Release: 15%{?dist}
 URL: http://www.gnome.org
 Source0: http://download.gnome.org/sources/gnome-panel/2.28/%{name}-%{version}.tar.bz2
 
@@ -410,6 +410,10 @@ fi
 %{_datadir}/gtk-doc/html/*
 
 %changelog
+* Tue Jun 11 2013 Matthew Barnes <mbarnes@redhat.com> 2.30.2-15
+- Rebuild against newer evolution-data-server.
+  Resolves: #973284
+
 * Thu Mar 03 2011 Ray Strode <rstrode@redhat.com> 2.30.2-14
 - Add group sorting options to window list preferences
   Resolves: #509061
